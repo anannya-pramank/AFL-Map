@@ -161,13 +161,16 @@ let cityLayerGroup = L.layerGroup().addTo(map);
 // level: 'world' | 'india' | 'state' | 'country'
 let state = { level:'world', country:null, stateName:null };
 
-function cityRadius(n){ return Math.max(4, Math.sqrt(n) * 2.6); }
+function cityRadius(n){
+  const factor = (state.level === 'world' || state.level === 'country') ? 2.2 : 1.35;
+  return Math.min(20, Math.max(2.6, Math.sqrt(n) * factor));
+}
 function renderCities(list){
   cityLayerGroup.clearLayers();
   list.forEach(c => {
     const m = L.circleMarker([c.lat, c.lon], {
-      radius: cityRadius(c.total), color:'#fff', weight:1.3,
-      fillColor:'#FB2780', fillOpacity:0.85
+      radius: cityRadius(c.total), color:'#fff', weight:1,
+      fillColor:'#FB2780', fillOpacity:0.8
     });
     m.bindTooltip(`${c.city}<br><span class="n">${c.total}</span> touchpoints`, { className:'cityTip', sticky:true });
     m.addTo(cityLayerGroup);
@@ -203,16 +206,18 @@ function setMinis(aNum, aLbl, bNum, bLbl, showA){
 function renderBreadcrumbs(){
   const el = document.getElementById('breadcrumbs');
   el.innerHTML = '';
-  const crumbs = [{label:'World', fn: goWorld}];
-  if (state.level === 'india' || state.level === 'state') crumbs.push({label:'India', fn: goIndia});
-  if (state.level === 'state') crumbs.push({label: state.stateName, fn: null});
-  if (state.level === 'country') crumbs.push({label: state.country, fn: null});
-  crumbs.forEach((c, i) => {
+  // World and India are always-available quick tabs, independent of drill depth
+  const crumbs = [
+    { label:'World', fn: goWorld, active: state.level === 'world' },
+    { label:'India', fn: enterIndia, active: state.level === 'india' }
+  ];
+  if (state.level === 'state') crumbs.push({ label: state.stateName, fn: null, active:true });
+  if (state.level === 'country') crumbs.push({ label: state.country, fn: null, active:true });
+  crumbs.forEach((c) => {
     const b = document.createElement('span');
-    const isCurrent = i === crumbs.length - 1;
-    b.className = 'crumb' + (isCurrent ? ' current' : '');
+    b.className = 'crumb' + (c.active ? ' current' : '');
     b.textContent = c.label;
-    if (!isCurrent && c.fn) b.addEventListener('click', c.fn);
+    if (!c.active && c.fn) b.addEventListener('click', c.fn);
     el.appendChild(b);
   });
 }
