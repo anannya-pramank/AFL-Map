@@ -27,11 +27,15 @@
   body{ font-family:"Poppins",sans-serif; background:var(--cream); color:var(--ink); overflow:hidden; }
   h1,h2,h3,.headline{ font-family:"Baloo 2",sans-serif; }
 
-  #map{ position:absolute; inset:0; background:var(--cream); }
-  .leaflet-container{ background:var(--cream); font-family:"Poppins",sans-serif; }
+  #map{ position:absolute; inset:0; background:#e9e6d8; }
+  .leaflet-container{ background:#e9e6d8; font-family:"Poppins",sans-serif; }
+  .leaflet-tile-pane{ filter: saturate(0.85) brightness(1.06) contrast(1.03); }
 
-  #brandbar{
+  #topbar{
     position:absolute; top:20px; left:20px; z-index:1000;
+    display:flex; align-items:center; gap:10px;
+  }
+  #brandbar{
     display:flex; align-items:center; gap:10px;
     background:var(--purple); color:var(--yellow);
     padding:10px 18px; border-radius:999px; box-shadow:var(--shadow);
@@ -39,12 +43,23 @@
   }
   #brandbar .dot{ width:8px; height:8px; border-radius:50%; background:var(--pink); }
 
+  #panelToggle{
+    display:flex; align-items:center; gap:7px;
+    background:#fff; color:var(--purple); border:1px solid var(--line);
+    padding:10px 16px; border-radius:999px; box-shadow:var(--shadow);
+    font-family:"Poppins",sans-serif; font-weight:600; font-size:12.5px;
+    cursor:pointer; letter-spacing:.01em; user-select:none;
+  }
+  #panelToggle:hover{ background:var(--cream); }
+  #panelToggle .icon{ width:14px; height:14px; display:inline-block; }
+
   #panel{
     position:absolute; top:76px; left:20px; z-index:1000;
     width:320px; max-height:calc(100vh - 96px);
     display:flex; flex-direction:column; gap:12px;
     overflow-y:auto; padding-right:2px;
   }
+  #panel.hidden{ display:none; }
   .card{ background:#fff; border:1px solid var(--line); border-radius:16px; box-shadow:var(--shadow); padding:18px 20px; }
   h1.title{ font-size:21px; margin:0 0 4px; color:var(--purple); line-height:1.2; }
   p.sub{ font-size:12.5px; color:var(--muted); margin:0; line-height:1.45; }
@@ -103,7 +118,13 @@
 </head>
 <body>
 
-<div id="brandbar"><span class="dot"></span>All For Law</div>
+<div id="topbar">
+  <div id="brandbar"><span class="dot"></span>All For Law</div>
+  <div id="panelToggle">
+    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"></rect><line x1="9" y1="4" x2="9" y2="20"></line></svg>
+    <span id="panelToggleLbl">Hide panel</span>
+  </div>
+</div>
 <div id="map"></div>
 
 <div id="panel">
@@ -137,10 +158,19 @@ const map = L.map('map', { zoomControl:false, attributionControl:false, minZoom:
 L.control.zoom({ position:'bottomright' }).addTo(map);
 L.control.attribution({ position:'bottomright', prefix:'Leaflet' }).addTo(map);
 
+// Real-world basemap (roads, coastlines, place labels) sitting under the choropleth
+L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+  subdomains: 'abcd',
+  maxZoom: 19,
+  minZoom: 2
+}).addTo(map);
+
 const WORLD_VIEW = { center:[15, 30], zoom:3 };
 const INDIA_VIEW = { center:[22.9, 82], zoom:5 };
 
-const maxCountryTotal = Math.max(...DATA.world.features.map(f => f.properties.total || 0));
+const countryTotalsById = {};
+DATA.world.features.forEach(f => { countryTotalsById[f.id] = { total: f.properties.total || 0, name: f.properties.name }; });
+const maxCountryTotal = Math.max(...Object.values(countryTotalsById).map(v => v.total));
 const maxStateTotal = Math.max(...DATA.indiaStates.features.map(f => f.properties.total || 0));
 
 function fillFor(total, max){
@@ -225,30 +255,58 @@ function renderBreadcrumbs(){
 // ---- WORLD level ----
 function worldStyle(feature){
   const total = feature.properties.total || 0;
-  return { fillColor: fillFor(total, maxCountryTotal), fillOpacity: total ? 0.88 : 0.6, color:'#fff', weight:1.2 };
+  return total
+    ? { fillColor: fillFor(total, maxCountryTotal), fillOpacity:0.72, color:'#fff', weight:1.2 }
+    : { fillColor:'#000', fillOpacity:0, color:'#8a8468', weight:0.6 };
 }
-worldLayer = L.geoJSON(DATA.world, {
-  style: worldStyle,
-  onEachFeature: (feature, layer) => {
-    const p = feature.properties;
-    if (p.total){
-      layer.bindTooltip(`<b>${p.name}</b><br><span style="color:#FB2780;font-weight:700;">${p.total}</span> touchpoints`, { className:'stateTip', sticky:true });
-    } else {
-      layer.bindTooltip(`<b>${p.name}</b><br>No reach recorded yet`, { className:'stateTip', sticky:true });
+worldLayer = null;
+function buildWorldLayer(featureCollection){
+  worldLayer = L.geoJSON(featureCollection, {
+    style: worldStyle,
+    onEachFeature: (feature, layer) => {
+      const p = feature.properties;
+      if (p.total){
+        layer.bindTooltip(`<b>${p.name}</b><br><span style="color:#FB2780;font-weight:700;">${p.total}</span> touchpoints`, { className:'stateTip', sticky:true });
+      } else {
+        layer.bindTooltip(`<b>${p.name}</b><br>No reach recorded yet`, { className:'stateTip', sticky:true });
+      }
+      layer.on('mouseover', () => { if (layer !== selectedCountryLayer) layer.setStyle({ weight:2.2 }); });
+      layer.on('mouseout', () => { if (layer !== selectedCountryLayer) layer.setStyle(worldStyle(feature)); });
+      layer.on('click', () => {
+        if (!p.total) return;
+        if (p.name === 'India') enterIndia(); else enterCountry(p.name, layer);
+      });
     }
-    layer.on('mouseover', () => { if (layer !== selectedCountryLayer) layer.setStyle({ weight:2.2 }); });
-    layer.on('mouseout', () => { if (layer !== selectedCountryLayer) layer.setStyle(worldStyle(feature)); });
-    layer.on('click', () => {
-      if (!p.total) return;
-      if (p.name === 'India') enterIndia(); else enterCountry(p.name, layer);
+  });
+}
+
+// Fetch real-world (accurate) country boundaries so borders line up with the basemap,
+// then join our own touchpoint totals onto them by ISO3 code.
+fetch('https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_110m_admin_0_countries.geojson')
+  .then(r => r.json())
+  .then(fc => {
+    fc.features.forEach(f => {
+      const code = f.properties.ADM0_A3 || f.properties.ISO_A3 || f.properties.ISO_A3_EH;
+      const match = countryTotalsById[code];
+      f.properties.total = match ? match.total : 0;
+      f.properties.name = match ? match.name : (f.properties.NAME || f.properties.ADMIN);
+      f.id = code;
     });
-  }
-}).addTo(map);
+    buildWorldLayer(fc);
+    goWorld();
+  })
+  .catch(() => {
+    // Fallback to the bundled (lower-detail) shapes if the live boundary data can't be fetched
+    buildWorldLayer(DATA.world);
+    goWorld();
+  });
 
 // ---- INDIA STATES level ----
 function stateStyle(feature){
   const total = feature.properties.total || 0;
-  return { fillColor: fillFor(total, maxStateTotal), fillOpacity: total ? 0.88 : 0.55, color:'#fff', weight:1.3 };
+  return total
+    ? { fillColor: fillFor(total, maxStateTotal), fillOpacity:0.72, color:'#fff', weight:1.3 }
+    : { fillColor:'#000', fillOpacity:0, color:'#8a8468', weight:0.7 };
 }
 indiaLayer = L.geoJSON(DATA.indiaStates, {
   style: stateStyle,
@@ -315,10 +373,11 @@ function enterState(stateName, layer){
   state = { level:'state', country:'India', stateName };
   if (selectedStateLayer) selectedStateLayer.setStyle(stateStyle(selectedStateLayer.feature));
   selectedStateLayer = layer;
-  layer.setStyle({ color:'#2B154A', weight:3.5, fillOpacity:0.92 });
+  layer.setStyle({ color:'#2B154A', weight:3.5, fillOpacity:0.6 });
   layer.bringToFront();
   map.fitBounds(layer.getBounds(), { padding:[60,60] });
-  const cities = DATA.cities.filter(c => c.admin === stateName);
+  const cities = DATA.cities.filter(c => c.admin === stateName
+    && c.city.trim().toLowerCase() !== stateName.trim().toLowerCase());
   renderCities(cities);
   const total = layer.feature.properties.total;
   setHero(total, `touchpoints in ${stateName}`);
@@ -331,10 +390,11 @@ function enterCountry(countryName, layer){
   state = { level:'country', country:countryName, stateName:null };
   if (selectedCountryLayer) selectedCountryLayer.setStyle(worldStyle(selectedCountryLayer.feature));
   selectedCountryLayer = layer;
-  layer.setStyle({ color:'#2B154A', weight:3, fillOpacity:0.92 });
+  layer.setStyle({ color:'#2B154A', weight:3, fillOpacity:0.6 });
   layer.bringToFront();
   map.fitBounds(layer.getBounds(), { padding:[70,70], maxZoom:6 });
-  const cities = DATA.cities.filter(c => c.country === countryName);
+  const cities = DATA.cities.filter(c => c.country === countryName
+    && c.city.trim().toLowerCase() !== countryName.trim().toLowerCase());
   renderCities(cities);
   const total = layer.feature.properties.total;
   setHero(total, `touchpoints in ${countryName}`);
@@ -343,7 +403,16 @@ function enterCountry(countryName, layer){
   renderBreadcrumbs();
 }
 
-goWorld();
+// ---- panel visibility toggle ----
+const panelEl = document.getElementById('panel');
+const toggleBtn = document.getElementById('panelToggle');
+const toggleLbl = document.getElementById('panelToggleLbl');
+let panelVisible = true;
+toggleBtn.addEventListener('click', () => {
+  panelVisible = !panelVisible;
+  panelEl.classList.toggle('hidden', !panelVisible);
+  toggleLbl.textContent = panelVisible ? 'Hide panel' : 'Show panel';
+});
 </script>
 </body>
 </html>
