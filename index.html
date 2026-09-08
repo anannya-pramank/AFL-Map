@@ -166,13 +166,15 @@ const DATA = JSON.parse(document.getElementById('mapdata').textContent);
 const map = L.map('map', { zoomControl:false, attributionControl:false, minZoom:2, maxZoom:9 })
   .setView([15, 30], 3);
 L.control.zoom({ position:'bottomright' }).addTo(map);
-L.control.attribution({ position:'bottomright', prefix:'Leaflet' }).addTo(map);
+L.control.attribution({ position:'bottomright', prefix:false }).addTo(map);
 
-// Real-world basemap (roads, coastlines, place labels) sitting under the choropleth
-L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-  subdomains: 'abcd',
+// Real-world basemap (roads, coastlines, place labels) sitting under the choropleth.
+// Uses OpenStreetMap's standard raster tiles directly — no API key / account needed.
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  subdomains: 'abc',
   maxZoom: 19,
-  minZoom: 2
+  minZoom: 2,
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
 }).addTo(map);
 
 const WORLD_VIEW = { center:[15, 30], zoom:3 };
@@ -230,8 +232,60 @@ function mascotIcon(h, footLift){
   });
 }
 
+// Desired (uncrowded) radius for an India-overview reach circle, before collision shrinking.
+function indiaCircleRadius(n){
+  return Math.min(30, Math.max(6, Math.sqrt(n) * 2.4));
+}
+
+// India has 200+ cities, many only a few km apart — too close to ever draw as separate
+// non-overlapping circles at country zoom. Greedily fold each city into the nearest
+// already-placed bubble (biggest reach first) when it's within CLUSTER_PX of it, then
+// size every remaining bubble by its combined reach so nothing overlaps.
+function layoutIndiaCircles(list){
+  const CLUSTER_PX = 20, PAD = 3, MIN_R = 5;
+
+  const order = list.map((c, i) => i).sort((a, b) => list[b].total - list[a].total);
+  const clusters = [];
+  order.forEach(i => {
+    const c = list[i];
+    const pt = map.latLngToContainerPoint([c.lat, c.lon]);
+    const near = clusters.find(cl => cl.pt.distanceTo(pt) <= CLUSTER_PX);
+    if (near){ near.total += c.total; near.cities.push(c); }
+    else clusters.push({ pt, total: c.total, cities: [c] });
+  });
+
+  clusters.sort((a, b) => b.total - a.total);
+  const placed = [];
+  clusters.forEach(cl => {
+    let r = indiaCircleRadius(cl.total);
+    placed.forEach(p => { r = Math.min(r, p.pt.distanceTo(cl.pt) - p.r - PAD); });
+    cl.r = Math.max(MIN_R, r);
+    placed.push(cl);
+  });
+  return clusters;
+}
+
+let lastIndiaCities = null; // re-laid out on zoom, since pixel spacing between cities changes
+
 function renderCities(list){
   cityLayerGroup.clearLayers();
+
+  if (state.level === 'india'){
+    // India overview: reach shown as neat, non-overlapping circles — no mascots here.
+    lastIndiaCities = list;
+    layoutIndiaCircles(list).forEach(cl => {
+      const latlng = map.containerPointToLatLng(cl.pt);
+      const tip = cl.cities.length === 1
+        ? `${cl.cities[0].city}<br><span class="n">${cl.total}</span> touchpoints`
+        : `${cl.cities.length} cities near ${cl.cities[0].city}<br><span class="n">${cl.total}</span> touchpoints`;
+      L.circleMarker(latlng, {
+        radius: cl.r, color:'#fff', weight:1.5,
+        fillColor:'#FB2780', fillOpacity:0.85
+      }).bindTooltip(tip, { className:'cityTip', sticky:true }).addTo(cityLayerGroup);
+    });
+    return;
+  }
+
   const stateLevel = (state.level === 'state');
   list.forEach(c => {
     const tip = `${c.city}<br><span class="n">${c.total}</span> touchpoints`;
@@ -246,13 +300,18 @@ function renderCities(list){
       m.bindTooltip(tip, { className:'cityTip', sticky:true });
       m.addTo(cityLayerGroup);
     } else {
-      // Zoomed out (world / India): a mascot for every point, no circle.
+      // Zoomed out (world / other countries): a mascot for every point, no circle.
       const m = L.marker([c.lat, c.lon], { icon: mascotIcon(mascotSize(c.total), 0), riseOnHover:true });
       m.bindTooltip(tip, { className:'cityTip', sticky:true });
       m.addTo(cityLayerGroup);
     }
   });
 }
+
+// Circle pixel-spacing changes with zoom, so re-run the no-overlap layout after zooming.
+map.on('zoomend', () => {
+  if (state.level === 'india' && lastIndiaCities) renderCities(lastIndiaCities);
+});
 
 function renderList(items, title, onClickRow, clickable){
   document.getElementById('listTitle').textContent = title;
